@@ -1,0 +1,200 @@
+import psycopg2
+import pandas as pd
+from datetime import datetime
+
+# NOTE: Update these with your actual PostgreSQL credentials
+DB_HOST = "localhost"
+DB_NAME = "urban_assets"
+DB_USER = "postgres"
+DB_PASSWORD = "Ximecollegerocks"
+
+def get_connection():
+    """Establishes a connection to the PostgreSQL database."""
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST,
+            database=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD
+        )
+        return conn
+    except psycopg2.OperationalError as e:
+        print(f"Error connecting to database: {e}")
+        return None
+
+def create_city_assets_table():
+    """Creates the 'city_assets' table if it doesn't exist."""
+    conn = get_connection()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS city_assets (
+                        asset_id VARCHAR(255) PRIMARY KEY,
+                        asset_type VARCHAR(50) NOT NULL,
+                        location_name VARCHAR(255),
+                        installation_date DATE,
+                        maintenance_cost DECIMAL(10, 2),
+                        service_life_years INTEGER,
+                        city_district VARCHAR(50)
+                    );
+                """)
+            conn.commit()
+            print("city_assets table created successfully.")
+        except Exception as e:
+            print(f"Error creating table: {e}")
+        finally:
+            conn.close()
+
+# --- CRUD Operations (Existing) ---
+def create_asset(asset_id, asset_type, location_name, installation_date, maintenance_cost, service_life_years, city_district):
+    """Inserts a new asset into the database."""
+    conn = get_connection()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO city_assets (asset_id, asset_type, location_name, installation_date, maintenance_cost, service_life_years, city_district)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s);
+                """, (asset_id, asset_type, location_name, installation_date, maintenance_cost, service_life_years, city_district))
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error creating asset: {e}")
+            return False
+        finally:
+            conn.close()
+
+def read_assets(asset_type=None, city_district=None, sort_by='asset_id'):
+    """Reads assets from the database with optional filtering and sorting."""
+    conn = get_connection()
+    if not conn:
+        return pd.DataFrame()
+
+    query = "SELECT * FROM city_assets WHERE 1=1"
+    params = []
+
+    if asset_type and asset_type != "All":
+        query += " AND asset_type = %s"
+        params.append(asset_type)
+
+    if city_district and city_district != "All":
+        query += " AND city_district = %s"
+        params.append(city_district)
+
+    if sort_by == 'maintenance_cost':
+        query += " ORDER BY maintenance_cost DESC"
+    elif sort_by == 'installation_date':
+        query += " ORDER BY installation_date DESC"
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+            rows = cur.fetchall()
+            cols = [desc[0] for desc in cur.description]
+            return pd.DataFrame(rows, columns=cols)
+    except Exception as e:
+        print(f"Error reading assets: {e}")
+        return pd.DataFrame()
+    finally:
+        conn.close()
+
+# --- NEW CRUD Operations for UPDATE and DELETE ---
+def update_asset(asset_id, asset_type, location_name, installation_date, maintenance_cost, service_life_years, city_district):
+    """Updates an existing asset in the database."""
+    conn = get_connection()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE city_assets
+                    SET asset_type = %s,
+                        location_name = %s,
+                        installation_date = %s,
+                        maintenance_cost = %s,
+                        service_life_years = %s,
+                        city_district = %s
+                    WHERE asset_id = %s;
+                """, (asset_type, location_name, installation_date, maintenance_cost, service_life_years, city_district, asset_id))
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error updating asset: {e}")
+            return False
+        finally:
+            conn.close()
+
+def delete_asset(asset_id):
+    """Deletes an asset from the database based on its ID."""
+    conn = get_connection()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM city_assets WHERE asset_id = %s;", (asset_id,))
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error deleting asset: {e}")
+            return False
+        finally:
+            conn.close()
+
+# --- Aggregation and Insights (Existing) ---
+def get_asset_insights():
+    """Calculates and returns various business insights and aggregates."""
+    conn = get_connection()
+    if not conn:
+        return {}
+
+    try:
+        with conn.cursor() as cur:
+            # COUNT: Total number of assets
+            cur.execute("SELECT COUNT(*) FROM city_assets;")
+            total_assets = cur.fetchone()[0] or 0
+
+            # SUM: Total maintenance cost
+            cur.execute("SELECT SUM(maintenance_cost) FROM city_assets;")
+            total_maintenance_cost = cur.fetchone()[0] or 0.0
+
+            # AVG: Average service life years
+            cur.execute("SELECT AVG(service_life_years) FROM city_assets;")
+            avg_service_life = cur.fetchone()[0] or 0.0
+
+            # MIN and MAX maintenance cost
+            cur.execute("SELECT MIN(maintenance_cost), MAX(maintenance_cost) FROM city_assets;")
+            min_max_costs = cur.fetchone()
+            min_cost = min_max_costs[0] or 0.0
+            max_cost = min_max_costs[1] or 0.0
+
+            # COUNT(DISTINCT): Unique districts with assets
+            cur.execute("SELECT COUNT(DISTINCT city_district) FROM city_assets;")
+            unique_districts = cur.fetchone()[0] or 0
+
+            # Grouped breakdown by asset_type
+            cur.execute("""
+                SELECT
+                    asset_type,
+                    COUNT(*),
+                    SUM(maintenance_cost),
+                    AVG(maintenance_cost)
+                FROM city_assets
+                GROUP BY asset_type
+                ORDER BY asset_type;
+            """)
+            grouped_data = cur.fetchall()
+            grouped_df = pd.DataFrame(grouped_data, columns=['Asset Type', 'Count', 'Total Cost', 'Average Cost'])
+
+            return {
+                "total_assets": total_assets,
+                "total_maintenance_cost": total_maintenance_cost,
+                "avg_service_life": avg_service_life,
+                "min_cost": min_cost,
+                "max_cost": max_cost,
+                "unique_districts": unique_districts,
+                "grouped_breakdown": grouped_df
+            }
+    except Exception as e:
+        print(f"Error getting insights: {e}")
+        return {}
+    finally:
+        conn.close()
