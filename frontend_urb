@@ -1,0 +1,173 @@
+import streamlit as st
+import uuid
+import datetime
+import pandas as pd
+
+import backend_urb
+
+# --- Main App Configuration ---
+st.set_page_config(page_title="Urban Asset Tracker", layout="wide")
+st.title("🏙️ Urban Asset Tracker")
+
+# Ensure the database table exists
+backend_urb.create_city_assets_table()
+
+# --- Sidebar for Adding New Assets ---
+st.sidebar.header("➕ Add New Asset")
+with st.sidebar.form("new_asset_form"):
+    asset_type = st.selectbox(
+        "Asset Type",
+        options=['Street Light', 'Bus Stop', 'Park Bench', 'Traffic Signal', 'Trash Can']
+    )
+    location_name = st.text_input("Location Name")
+    installation_date = st.date_input("Installation Date", datetime.date.today())
+    maintenance_cost = st.number_input("Last Maintenance Cost ($)", min_value=0.0, format="%.2f")
+    service_life_years = st.number_input("Service Life (Years)", min_value=1, step=1)
+    city_district = st.text_input("City District")
+
+    submitted = st.form_submit_button("Add Asset")
+    if submitted:
+        if location_name and city_district:
+            asset_id = str(uuid.uuid4())
+            success = backend_urb.create_asset(
+                asset_id,
+                asset_type,
+                location_name,
+                installation_date,
+                maintenance_cost,
+                service_life_years,
+                city_district
+            )
+            if success:
+                st.success("Asset added successfully!")
+                st.experimental_rerun()
+            else:
+                st.error("Failed to add asset. Please check database connection.")
+        else:
+            st.error("Location Name and City District are required.")
+
+# --- Business Insights Section ---
+st.header("📊 Key Metrics & Insights")
+insights = backend_urb.get_asset_insights()
+
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    st.metric(label="Total Assets", value=insights.get("total_assets", 0))
+    st.metric(label="Unique Districts", value=insights.get("unique_districts", 0))
+
+with col2:
+    st.metric(label="Total Maintenance Cost", value=f"${insights.get('total_maintenance_cost', 0.0):,.2f}")
+    st.metric(label="Average Service Life", value=f"{insights.get('avg_service_life', 0.0):.1f} years")
+
+with col3:
+    st.metric(label="Min Maintenance Cost", value=f"${insights.get('min_cost', 0.0):,.2f}")
+
+with col4:
+    st.metric(label="Max Maintenance Cost", value=f"${insights.get('max_cost', 0.0):,.2f}")
+
+st.markdown("---")
+
+# --- Asset Breakdown by Type ---
+st.subheader("Asset Breakdown by Type")
+grouped_df = insights.get("grouped_breakdown", pd.DataFrame())
+
+if not grouped_df.empty:
+    st.dataframe(grouped_df, use_container_width=True)
+else:
+    st.info("No data to show breakdown by asset type. Please check your database connection.")
+
+st.markdown("---")
+
+# --- Read, Filter & CRUD Operations on Existing Assets ---
+st.header("🔍 Asset Inventory")
+
+# Fetch all assets to populate select boxes
+all_assets_df = backend_urb.read_assets()
+asset_ids = [''] + all_assets_df['asset_id'].tolist() if not all_assets_df.empty else ['']
+
+# Add a section for Update and Delete operations
+st.subheader("Update or Delete an Existing Asset")
+selected_asset_id = st.selectbox("Select an Asset to Edit or Delete", options=asset_ids)
+
+if selected_asset_id:
+    # Filter DataFrame to get the selected asset's data
+    selected_asset = all_assets_df[all_assets_df['asset_id'] == selected_asset_id].iloc[0]
+    
+    with st.form("update_delete_form"):
+        st.write(f"Editing Asset ID: {selected_asset_id}")
+        
+        # Pre-populate form fields with existing data
+        asset_type_upd = st.selectbox(
+            "Asset Type",
+            options=['Street Light', 'Bus Stop', 'Park Bench', 'Traffic Signal', 'Trash Can'],
+            index=['Street Light', 'Bus Stop', 'Park Bench', 'Traffic Signal', 'Trash Can'].index(selected_asset['asset_type'])
+        )
+        location_name_upd = st.text_input("Location Name", value=selected_asset['location_name'])
+        installation_date_upd = st.date_input("Installation Date", value=selected_asset['installation_date'])
+        maintenance_cost_upd = st.number_input("Last Maintenance Cost ($)", min_value=0.0, format="%.2f", value=selected_asset['maintenance_cost'])
+        service_life_years_upd = st.number_input("Service Life (Years)", min_value=1, step=1, value=selected_asset['service_life_years'])
+        city_district_upd = st.text_input("City District", value=selected_asset['city_district'])
+
+        # Buttons for Update and Delete
+        col_upd, col_del = st.columns(2)
+        with col_upd:
+            update_submitted = st.form_submit_button("Update Asset")
+        with col_del:
+            delete_submitted = st.form_submit_button("Delete Asset")
+
+    # Handle button clicks
+    if update_submitted:
+        success = backend_urb.update_asset(
+            selected_asset_id,
+            asset_type_upd,
+            location_name_upd,
+            installation_date_upd,
+            maintenance_cost_upd,
+            service_life_years_upd,
+            city_district_upd
+        )
+        if success:
+            st.success("Asset updated successfully!")
+            st.experimental_rerun()
+        else:
+            st.error("Failed to update asset.")
+    
+    if delete_submitted:
+        success = backend_urb.delete_asset(selected_asset_id)
+        if success:
+            st.success("Asset deleted successfully!")
+            st.experimental_rerun()
+        else:
+            st.error("Failed to delete asset.")
+
+st.markdown("---")
+
+# --- Filtering and Sorting (Existing) ---
+st.subheader("Filter & Sort Assets")
+col_filter_type, col_filter_district, col_sort = st.columns([1, 1, 1])
+
+asset_types = ['All'] + sorted(all_assets_df['asset_type'].unique().tolist()) if not all_assets_df.empty else ['All']
+city_districts = ['All'] + sorted(all_assets_df['city_district'].unique().tolist()) if not all_assets_df.empty else ['All']
+
+with col_filter_type:
+    filter_by_type = st.selectbox("Filter by Asset Type", options=asset_types)
+with col_filter_district:
+    filter_by_district = st.selectbox("Filter by City District", options=city_districts)
+with col_sort:
+    sort_by_column = st.selectbox(
+        "Sort By",
+        options=['None', 'installation_date', 'maintenance_cost'],
+        format_func=lambda x: x.replace('_', ' ').title() if x != 'None' else 'Default'
+    )
+
+assets_df = backend_urb.read_assets(
+    asset_type=filter_by_type,
+    city_district=filter_by_district,
+    sort_by=sort_by_column if sort_by_column != 'None' else None
+)
+
+if not assets_df.empty:
+    st.dataframe(assets_df, use_container_width=True)
+else:
+    st.info("No assets match the selected filters. Please check your database connection.")
